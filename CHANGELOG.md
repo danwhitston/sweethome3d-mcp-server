@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Documentation
+- Fixed the Claude Desktop configuration in the README: Claude Desktop does not load `"type": "http"` entries, so the documented entry now uses the `mcp-remote` bridge, as the "Auto-configure Claude Desktop" button does. (#7)
 - Added a Troubleshooting section documenting the macOS Mac App Store sandbox limitation: that build lacks the `com.apple.security.network.server` entitlement, so the MCP server cannot open its listening port. Use a non-sandboxed Sweet Home 3D build instead. (#2)
 
 ## [1.1.0] - 2026-03-13
