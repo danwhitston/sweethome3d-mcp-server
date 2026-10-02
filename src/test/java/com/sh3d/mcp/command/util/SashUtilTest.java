@@ -3,6 +3,7 @@ package com.sh3d.mcp.command.util;
 import com.eteks.sweethome3d.model.CatalogDoorOrWindow;
 import com.eteks.sweethome3d.model.CatalogPieceOfFurniture;
 import com.eteks.sweethome3d.model.HomeDoorOrWindow;
+import com.eteks.sweethome3d.model.HomeFurnitureGroup;
 import com.eteks.sweethome3d.model.HomePieceOfFurniture;
 import com.eteks.sweethome3d.model.Sash;
 import org.junit.jupiter.api.Nested;
@@ -16,17 +17,25 @@ import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+/**
+ * Спецификация — соглашение SH3D о створках (каталог по умолчанию, PlanComponent):
+ * доли размера изделия, углы в радианах; дуга строится как Arc2D в системе изделия с осью Y вниз
+ * от startAngle с размахом endAngle − startAngle, поэтому направление угла θ на плане — (cos θ, −sin θ),
+ * а лицевая сторона изделия — +Y.
+ * Двери каталога SH3D: левая створка 0 → −90°, правая 180 → 270°, петля на лицевой грани коробки.
+ */
 class SashUtilTest {
 
-    private static final float QUARTER = (float) Math.PI / 2;
-    private static final float HALF = (float) Math.PI;
+    private static final float EPS = 0.001f;
+    /** Коробка двери: от 0.1 до 0.6 глубины, лицевая грань — 0.6. */
+    private static final float FRONT_FACE = 0.6f;
 
     private static HomeDoorOrWindow newDoor() {
-        CatalogDoorOrWindow catalogDoor = new CatalogDoorOrWindow(
+        HomeDoorOrWindow door = new HomeDoorOrWindow(new CatalogDoorOrWindow(
                 "test#door", "Door", null, null, null,
-                90f, 12f, 210f, 0f, false, 1f, 0f,
-                new Sash[0], null, null, true, null, null);
-        return new HomeDoorOrWindow(catalogDoor);
+                90f, 30f, 210f, 0f, false, 0.5f, 0.1f,
+                new Sash[0], null, null, true, null, null));
+        return door;
     }
 
     private static HomePieceOfFurniture newTable() {
@@ -34,160 +43,288 @@ class SashUtilTest {
                 "Table", null, null, 120f, 80f, 75f, true, false));
     }
 
-    // ==================== preset ====================
+    private static Sash[] apply(HomeDoorOrWindow door, Object... keyValues) {
+        SashUtil.Spec spec = SashUtil.parse(params(keyValues));
+        assertNotNull(spec);
+        spec.applyTo(door);
+        return door.getSashes();
+    }
+
+    private static Map<String, Object> params(Object... keyValues) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        for (int i = 0; i < keyValues.length; i += 2) {
+            params.put((String) keyValues[i], keyValues[i + 1]);
+        }
+        return params;
+    }
+
+    private static Map<String, Object> leaf(Object... keyValues) {
+        return params(keyValues);
+    }
+
+    /**
+     * Открытая створка смотрит к лицевой стороне изделия (+Y на плане), и дуга — четверть круга:
+     * направление само по себе не отличает 270° от −90°, а размах у них 90° и 270°.
+     */
+    private static void assertOpensToFront(Sash sash) {
+        assertEquals(1.0, -Math.sin(sash.getEndAngle()), EPS, "open leaf must point to the piece's front");
+        double sweep = Math.toDegrees(sash.getEndAngle() - sash.getStartAngle());
+        assertEquals(sash.getXAxis() < 0.5f ? -90.0 : 90.0, sweep, 0.01,
+                "swing arc must be a quarter turn toward the front, like SH3D catalog doors");
+    }
+
+    private static HomeDoorOrWindow doorWithFrame(float wallThickness, float wallDistance) {
+        return new HomeDoorOrWindow(new CatalogDoorOrWindow(
+                "test#door", "Door", null, null, null,
+                90f, 30f, 210f, 0f, false, wallThickness, wallDistance,
+                new Sash[0], null, null, true, null, null));
+    }
+
+    /** Закрытая створка лежит вдоль изделия от петли к другому концу. */
+    private static void assertClosedAlongPieceFromHinge(Sash sash) {
+        double dx = Math.cos(sash.getStartAngle());
+        assertEquals(0.0, Math.sin(sash.getStartAngle()), EPS);
+        assertEquals(sash.getXAxis() < 0.5f ? 1.0 : -1.0, dx, EPS, "closed leaf must point away from its hinge");
+    }
+
+    // ==================== пресеты ====================
 
     @Nested
-    class Preset {
+    class Presets {
 
         @Test
-        void singleLeftHingesAtLeftEndAndOpensToNinetyDegrees() {
-            Sash[] sashes = SashUtil.preset("single_left");
+        void singleLeftMatchesSh3dCatalogDoor() {
+            Sash[] s = apply(newDoor(), "sashPreset", "single_left");
 
-            assertEquals(1, sashes.length);
-            assertEquals(0f, sashes[0].getXAxis(), 0.001f);
-            assertEquals(1f, sashes[0].getWidth(), 0.001f);
-            assertEquals(0f, sashes[0].getStartAngle(), 0.001f);
-            assertEquals(QUARTER, sashes[0].getEndAngle(), 0.001f);
+            assertEquals(1, s.length);
+            assertEquals(0f, s[0].getXAxis(), EPS);
+            assertEquals(FRONT_FACE, s[0].getYAxis(), EPS);
+            assertEquals(1f, s[0].getWidth(), EPS);
+            assertEquals(0f, s[0].getStartAngle(), EPS);
+            assertEquals((float) Math.toRadians(-90), s[0].getEndAngle(), EPS);
+            assertOpensToFront(s[0]);
+            assertClosedAlongPieceFromHinge(s[0]);
         }
 
         @Test
-        void singleRightHingesAtRightEndAndOpensToSameSide() {
-            Sash[] sashes = SashUtil.preset("single_right");
+        void singleRightIsHingedAtRightEndAndOpensToFront() {
+            Sash[] s = apply(newDoor(), "sashPreset", "single_right");
 
-            assertEquals(1, sashes.length);
-            assertEquals(1f, sashes[0].getXAxis(), 0.001f);
-            assertEquals(HALF, sashes[0].getStartAngle(), 0.001f);
-            assertEquals(QUARTER, sashes[0].getEndAngle(), 0.001f);
+            assertEquals(1, s.length);
+            assertEquals(1f, s[0].getXAxis(), EPS);
+            assertEquals(FRONT_FACE, s[0].getYAxis(), EPS);
+            assertEquals(1f, s[0].getWidth(), EPS);
+            assertOpensToFront(s[0]);
+            assertClosedAlongPieceFromHinge(s[0]);
         }
 
         @Test
-        void doubleHasTwoHalfWidthLeavesMeetingInTheMiddle() {
-            Sash[] sashes = SashUtil.preset("double");
+        void doubleHasTwoHalfLeavesFromBothEndsOpeningToFront() {
+            Sash[] s = apply(newDoor(), "sashPreset", "double");
 
-            assertEquals(2, sashes.length);
-            assertEquals(0f, sashes[0].getXAxis(), 0.001f);
-            assertEquals(1f, sashes[1].getXAxis(), 0.001f);
-            assertEquals(0.5f, sashes[0].getWidth(), 0.001f);
-            assertEquals(0.5f, sashes[1].getWidth(), 0.001f);
-            // both leaves end at the same open angle, i.e. swing to the same side
-            assertEquals(sashes[0].getEndAngle(), sashes[1].getEndAngle(), 0.001f);
+            assertEquals(2, s.length);
+            assertEquals(0f, s[0].getXAxis(), EPS);
+            assertEquals(1f, s[1].getXAxis(), EPS);
+            for (Sash sash : s) {
+                assertEquals(0.5f, sash.getWidth(), EPS);
+                assertEquals(FRONT_FACE, sash.getYAxis(), EPS);
+                assertOpensToFront(sash);
+                assertClosedAlongPieceFromHinge(sash);
+            }
         }
 
         @Test
-        void noneIsEmpty() {
-            assertEquals(0, SashUtil.preset("none").length);
+        void noneRemovesSashes() {
+            HomeDoorOrWindow door = newDoor();
+            door.setSashes(new Sash[] {new Sash(0, 0, 1, 0, 1)});
+
+            assertEquals(0, apply(door, "sashPreset", "none").length);
         }
 
         @Test
-        void unknownPresetIsRejected() {
+        void hingeOnPieceFrontWhenFrameFillsDepth() {
+            HomeDoorOrWindow door = newDoor();
+            door.setWallDistance(0f);
+            door.setWallThickness(1f);
+
+            assertEquals(1f, apply(door, "sashPreset", "single_left")[0].getYAxis(), EPS);
+        }
+
+        @Test
+        void hingeOnPieceFrontWhenFrameMetadataUnusable() {
+            HomeDoorOrWindow door = newDoor();
+            door.setWallThickness(Float.NaN);
+
+            assertEquals(1f, apply(door, "sashPreset", "single_left")[0].getYAxis(), EPS);
+        }
+
+        @Test
+        void hingeOnPieceFrontWhenFrameBeyondDepth() {
+            assertEquals(1f, apply(doorWithFrame(0.8f, 0.5f), "sashPreset", "single_left")[0].getYAxis(), EPS);
+        }
+
+        @Test
+        void hingeOnPieceFrontWhenFrameHasNoThickness() {
+            assertEquals(1f, apply(doorWithFrame(0f, 0f), "sashPreset", "single_left")[0].getYAxis(), EPS);
+        }
+
+        @Test
+        void unknownPresetIsRejectedWithName() {
             IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
-                    () -> SashUtil.preset("sliding"));
-            assertTrue(ex.getMessage().contains("sliding"));
+                    () -> SashUtil.parse(params("sashPreset", "revolving")));
+            assertTrue(ex.getMessage().contains("revolving"));
         }
     }
 
-    // ==================== fromList ====================
+    // ==================== явный список ====================
 
     @Nested
-    class FromList {
+    class ExplicitList {
 
         @Test
-        void convertsDegreesToRadiansAndAppliesDefaults() {
-            Map<String, Object> sash = new LinkedHashMap<>();
-            sash.put("xAxis", 1);
-            sash.put("startAngle", 180);
-            sash.put("endAngle", 90);
+        void defaultsAreSh3dLeftLeafHingedOnFrameFront() {
+            Sash[] s = apply(newDoor(), "sashes", List.of(leaf()));
 
-            Sash[] sashes = SashUtil.fromList(Collections.singletonList(sash));
-
-            assertEquals(1, sashes.length);
-            assertEquals(1f, sashes[0].getXAxis(), 0.001f);
-            assertEquals(0.5f, sashes[0].getYAxis(), 0.001f);
-            assertEquals(1f, sashes[0].getWidth(), 0.001f);
-            assertEquals(HALF, sashes[0].getStartAngle(), 0.001f);
-            assertEquals(QUARTER, sashes[0].getEndAngle(), 0.001f);
+            assertEquals(1, s.length);
+            assertEquals(0f, s[0].getXAxis(), EPS);
+            assertEquals(FRONT_FACE, s[0].getYAxis(), EPS);
+            assertEquals(1f, s[0].getWidth(), EPS);
+            assertEquals(0f, s[0].getStartAngle(), EPS);
+            assertOpensToFront(s[0]);
         }
 
         @Test
-        void rejectsNonListValue() {
-            assertThrows(IllegalArgumentException.class, () -> SashUtil.fromList("double"));
+        void givenValuesArePassedThroughWithAnglesInDegrees() {
+            Sash[] s = apply(newDoor(), "sashes", List.of(
+                    leaf("xAxis", 1, "yAxis", 0.25, "width", 0.75, "startAngle", 180, "endAngle", 90)));
+
+            assertEquals(1f, s[0].getXAxis(), EPS);
+            assertEquals(0.25f, s[0].getYAxis(), EPS);
+            assertEquals(0.75f, s[0].getWidth(), EPS);
+            assertEquals((float) Math.PI, s[0].getStartAngle(), EPS);
+            assertEquals((float) Math.PI / 2, s[0].getEndAngle(), EPS);
         }
 
         @Test
-        void rejectsNonObjectItems() {
-            List<Object> items = Arrays.asList(1, 2);
-            assertThrows(IllegalArgumentException.class, () -> SashUtil.fromList(items));
+        void unknownPresetIsRejectedEvenWhenListOverridesIt() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> SashUtil.parse(params("sashPreset", "bogus", "sashes", Collections.emptyList())));
+            assertTrue(ex.getMessage().contains("bogus"), ex.getMessage());
+        }
+
+        @Test
+        void unknownFieldIsRejectedWithIndexAndName() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> SashUtil.parse(params("sashes", List.of(leaf("xaxis", 1)))));
+            assertTrue(ex.getMessage().contains("sashes[0]") && ex.getMessage().contains("xaxis"), ex.getMessage());
+        }
+
+        @Test
+        void booleanFieldIsRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> SashUtil.parse(params("sashes", List.of(leaf("xAxis", true)))));
+            assertTrue(ex.getMessage().contains("sashes[0].xAxis"), ex.getMessage());
+        }
+
+        @Test
+        void listOverridesPreset() {
+            Sash[] s = apply(newDoor(), "sashPreset", "double", "sashes", List.of(leaf("xAxis", 1)));
+
+            assertEquals(1, s.length);
+            assertEquals(1f, s[0].getXAxis(), EPS);
+        }
+
+        @Test
+        void emptyListRemovesSashes() {
+            HomeDoorOrWindow door = newDoor();
+            door.setSashes(new Sash[] {new Sash(0, 0, 1, 0, 1)});
+
+            assertEquals(0, apply(door, "sashes", Collections.emptyList()).length);
+        }
+
+        @Test
+        void nonNumericFieldIsRejectedWithIndexAndName() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> SashUtil.parse(params("sashes", List.of(leaf(), leaf("startAngle", "180")))));
+            assertTrue(ex.getMessage().contains("sashes[1].startAngle"), ex.getMessage());
+        }
+
+        @Test
+        void numberOutOfFloatRangeIsRejected() {
+            IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                    () -> SashUtil.parse(params("sashes", List.of(leaf("width", 1e40)))));
+            assertTrue(ex.getMessage().contains("sashes[0].width"), ex.getMessage());
+        }
+
+        @Test
+        void nonPositiveWidthIsRejected() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> SashUtil.parse(params("sashes", List.of(leaf("width", 0)))));
+            assertThrows(IllegalArgumentException.class,
+                    () -> SashUtil.parse(params("sashes", List.of(leaf("width", -0.5)))));
+        }
+
+        @Test
+        void nonListValueIsRejected() {
+            assertThrows(IllegalArgumentException.class, () -> SashUtil.parse(params("sashes", "double")));
+        }
+
+        @Test
+        void nonObjectItemIsRejected() {
+            assertThrows(IllegalArgumentException.class,
+                    () -> SashUtil.parse(params("sashes", Arrays.asList(1, 2))));
         }
     }
 
-    // ==================== applyFromParams ====================
+    // ==================== разбор и применимость ====================
 
-    @Nested
-    class ApplyFromParams {
-
-        @Test
-        void doesNothingWhenNoSashParametersGiven() {
-            HomeDoorOrWindow door = newDoor();
-            Map<String, Object> params = new LinkedHashMap<>();
-            params.put("width", 80.0);
-
-            assertNull(SashUtil.applyFromParams(door, params));
-            assertEquals(0, door.getSashes().length);
-        }
-
-        @Test
-        void appliesPreset() {
-            HomeDoorOrWindow door = newDoor();
-            Map<String, Object> params = new LinkedHashMap<>();
-            params.put(SashUtil.PARAM_PRESET, "double");
-
-            assertNull(SashUtil.applyFromParams(door, params));
-            assertEquals(2, door.getSashes().length);
-        }
-
-        @Test
-        void explicitListOverridesPreset() {
-            HomeDoorOrWindow door = newDoor();
-            Map<String, Object> params = new LinkedHashMap<>();
-            params.put(SashUtil.PARAM_PRESET, "double");
-            params.put(SashUtil.PARAM_SASHES, Collections.singletonList(new LinkedHashMap<String, Object>()));
-
-            assertNull(SashUtil.applyFromParams(door, params));
-            assertEquals(1, door.getSashes().length);
-        }
-
-        @Test
-        void reportsErrorForUnknownPreset() {
-            HomeDoorOrWindow door = newDoor();
-            Map<String, Object> params = new LinkedHashMap<>();
-            params.put(SashUtil.PARAM_PRESET, "revolving");
-
-            String error = SashUtil.applyFromParams(door, params);
-
-            assertNotNull(error);
-            assertTrue(error.contains("revolving"));
-        }
-
-        @Test
-        void refusesPlainFurniture() {
-            HomePieceOfFurniture table = newTable();
-            Map<String, Object> params = new LinkedHashMap<>();
-            params.put(SashUtil.PARAM_PRESET, "single_left");
-
-            String error = SashUtil.applyFromParams(table, params);
-
-            assertNotNull(error);
-            assertTrue(error.toLowerCase().contains("doors and windows"));
-        }
+    @Test
+    void nothingRequestedWhenNoSashParameters() {
+        assertNull(SashUtil.parse(params("width", 80.0)));
+        assertNull(SashUtil.parse(params("sashPreset", null, "sashes", null)));
     }
 
-    // ==================== count ====================
+    @Test
+    void plainFurnitureIsNotApplicable() {
+        SashUtil.Spec spec = SashUtil.parse(params("sashPreset", "single_left"));
+        HomePieceOfFurniture table = newTable();
+
+        String error = SashUtil.checkApplicable(spec, table);
+        assertNotNull(error);
+        assertTrue(error.toLowerCase().contains("doors and windows"));
+        assertThrows(IllegalArgumentException.class, () -> spec.applyTo(table));
+        assertNull(SashUtil.checkApplicable(spec, newDoor()));
+        assertNull(SashUtil.checkApplicable(null, table));
+    }
+
+    @Test
+    void doorGroupAndLegacyDoorGetTheirOwnExplanation() throws Exception {
+        SashUtil.Spec spec = SashUtil.parse(params("sashPreset", "single_left"));
+        HomeFurnitureGroup group = new HomeFurnitureGroup(List.of(newDoor(), newDoor()), "Doors");
+        // Дверь, поставленная прежним плагином: обычная мебель с флагом двери (флаг — через reflection,
+        // как фикстура «Front Door» в PlaceDoorOrWindowHandlerTest)
+        CatalogPieceOfFurniture plainDoor = new CatalogPieceOfFurniture(
+                "Old door", null, null, 90f, 10f, 210f, true, false);
+        java.lang.reflect.Field flag = CatalogPieceOfFurniture.class.getDeclaredField("doorOrWindow");
+        flag.setAccessible(true);
+        flag.set(plainDoor, true);
+        HomePieceOfFurniture legacy = new HomePieceOfFurniture(plainDoor);
+        assertTrue(group.isDoorOrWindow());
+        assertTrue(legacy.isDoorOrWindow());
+
+        String groupError = SashUtil.checkApplicable(spec, group);
+        String legacyError = SashUtil.checkApplicable(spec, legacy);
+
+        assertTrue(groupError.contains("doors and windows") && groupError.contains("group"), groupError);
+        assertTrue(legacyError.contains("Old door") && legacyError.contains("place_door_or_window"), legacyError);
+        assertThrows(IllegalArgumentException.class, () -> spec.applyTo(group));
+    }
 
     @Test
     void countIsZeroForPlainFurnitureAndSashLengthForDoors() {
         assertEquals(0, SashUtil.count(newTable()));
         HomeDoorOrWindow door = newDoor();
-        door.setSashes(SashUtil.preset("double"));
+        apply(door, "sashPreset", "double");
         assertEquals(2, SashUtil.count(door));
     }
 }
